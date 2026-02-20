@@ -10,9 +10,22 @@
 		1DE204962F4626EB00042ECA /* TennisVoiceScore.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TennisVoiceScore.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		1DE204A52F4627F600042ECA /* Exceptions for "TennisVoiceScore" folder in "TennisVoiceScore" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 1DE204952F4626EB00042ECA /* TennisVoiceScore */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		1DE204982F4626EB00042ECA /* TennisVoiceScore */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				1DE204A52F4627F600042ECA /* Exceptions for "TennisVoiceScore" folder in "TennisVoiceScore" target */,
+			);
 			path = TennisVoiceScore;
 			sourceTree = "<group>";
 		};
@@ -251,8 +264,12 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = L7W3364T36;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = TennisVoiceScore/Info.plist;
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "האפליקציה צריכה מיקרופון כדי לזהות פקודות קוליות.\n";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "האפליקציה משתמשת בזיהוי דיבור כדי לספור נקודות בטניס.\n";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -282,8 +299,12 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = L7W3364T36;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = TennisVoiceScore/Info.plist;
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "האפליקציה צריכה מיקרופון כדי לזהות פקודות קוליות.\n";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "האפליקציה משתמשת בזיהוי דיבור כדי לספור נקודות בטניס.\n";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
