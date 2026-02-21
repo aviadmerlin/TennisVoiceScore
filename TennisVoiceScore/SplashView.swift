@@ -11,6 +11,7 @@ import AVFoundation
 struct SplashView: View {
     @State private var scale: CGFloat = 0.6
     @State private var opacity: Double = 0
+    @State private var player: AVAudioPlayer?
 
     var body: some View {
         ZStack {
@@ -54,8 +55,11 @@ struct SplashView: View {
     private func playSplashSound() {
         guard let url = Bundle.main.url(forResource: "splash", withExtension: "mp3") else { return }
         do {
-            let player = try AVAudioPlayer(contentsOf: url)
-            player.play()
+            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
+            try AVAudioSession.sharedInstance().setActive(true)
+            let audioPlayer = try AVAudioPlayer(contentsOf: url)
+            player = audioPlayer
+            audioPlayer.play()
         } catch {}
     }
 }
