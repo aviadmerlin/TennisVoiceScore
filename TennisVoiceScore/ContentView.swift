@@ -187,22 +187,17 @@ func parseCommandHebrew(_ text: String, playerA: String, playerB: String) -> Com
     // Score: synonyms
     if t.contains("תוצאה") || t.contains("תן תוצאה") { return .score }
 
-    // Point A/B by number: whole-word only to avoid false positives
+    // Point A/B by number: whole-word only
     if normalizedContainsWord(t, word: "אחד") { return .pointA }
     if normalizedContainsWord(t, word: "שתיים") || normalizedContainsWord(t, word: "שתים") { return .pointB }
 
-    let hasPoint = raw.contains("נקודה") || raw.contains("תן") || raw.contains("תני") || raw.contains("תנו")
-    let hasTo = raw.contains("ל")
-
-    if hasPoint && hasTo {
-        if a.count >= 2, t.contains(a) { return .pointA }
-        if b.count >= 2, t.contains(b) { return .pointB }
-        return .none
+    // Point by name: STRICT — only "נקודה ל{playerName}" (exact substring structure)
+    let needle = "נקודה ל"
+    if raw.contains(needle), let range = raw.range(of: needle) {
+        let after = String(raw[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        if !a.isEmpty, after.hasPrefix(a) { return .pointA }
+        if !b.isEmpty, after.hasPrefix(b) { return .pointB }
     }
-
-    // Direct name match: require minimum length and word-boundary to avoid common words
-    if a.count >= 2, normalizedContainsWord(t, word: a) { return .pointA }
-    if b.count >= 2, normalizedContainsWord(t, word: b) { return .pointB }
 
     return .none
 }
