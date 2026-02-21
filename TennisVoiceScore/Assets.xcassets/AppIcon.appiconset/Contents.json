@@ -1,7 +1,7 @@
 {
   "images" : [
     {
-      "filename" : "Gemini_Generated.jpg",
+      "filename" : "tennis_cartoon.jpg",
       "idiom" : "universal",
       "platform" : "ios",
       "size" : "1024x1024"
@@ -13,7 +13,7 @@
           "value" : "dark"
         }
       ],
-      "filename" : "Gemini_Generated 1.jpg",
+      "filename" : "tennis_cartoon 1.jpg",
       "idiom" : "universal",
       "platform" : "ios",
       "size" : "1024x1024"
@@ -25,7 +25,7 @@
           "value" : "tinted"
         }
       ],
-      "filename" : "Gemini_Generated 2.jpg",
+      "filename" : "tennis_cartoon 2.jpg",
       "idiom" : "universal",
       "platform" : "ios",
       "size" : "1024x1024"

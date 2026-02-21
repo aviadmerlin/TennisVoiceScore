@@ -138,14 +138,42 @@ func pointToB(_ s: MatchState) -> MatchState {
 
 // MARK: - Commands
 
-enum Command { case pointA, pointB, undo, score, none }
+enum Command: Equatable { case pointA, pointB, undo, score, none }
 
+/// Debug info for speech recognition (optional overlay).
+struct SpeechDebugInfo: Equatable {
+    let rawTranscript: String
+    let normalizedTranscript: String
+    let detectedCommand: Command
+    let reason: String
+    let timestamp: Date
+}
+
+/// Normalizes for matching: letters + digits + single spaces, collapsed and trimmed. Case-insensitive for Latin.
 func normalizedForCommand(_ s: String) -> String {
     let lowered = s.lowercased()
-    let filtered = lowered.unicodeScalars.filter { scalar in
-        CharacterSet.letters.contains(scalar) || CharacterSet.decimalDigits.contains(scalar)
+    var result: [Character] = []
+    var lastWasSpace = false
+    for char in lowered {
+        let scalar = char.unicodeScalars.first!
+        if CharacterSet.letters.contains(scalar) || CharacterSet.decimalDigits.contains(scalar) {
+            result.append(char)
+            lastWasSpace = false
+        } else if CharacterSet.whitespacesAndNewlines.contains(scalar), !lastWasSpace {
+            result.append(" ")
+            lastWasSpace = true
+        }
     }
-    return String(String.UnicodeScalarView(filtered))
+    let str = String(result).trimmingCharacters(in: .whitespacesAndNewlines)
+    return str.replacingOccurrences(of: "  ", with: " ", options: .regularExpression)
+}
+
+/// Returns true if normalized string `t` contains `word` as a whole word (with spaces or boundaries).
+func normalizedContainsWord(_ t: String, word: String) -> Bool {
+    guard !word.isEmpty else { return false }
+    let w = word.trimmingCharacters(in: .whitespacesAndNewlines)
+    if w.isEmpty { return false }
+    return t == w || t.hasPrefix(w + " ") || t.hasSuffix(" " + w) || t.contains(" " + w + " ")
 }
 
 func parseCommandHebrew(_ text: String, playerA: String, playerB: String) -> Command {
@@ -154,23 +182,27 @@ func parseCommandHebrew(_ text: String, playerA: String, playerB: String) -> Com
     let a = normalizedForCommand(playerA)
     let b = normalizedForCommand(playerB)
 
-    if t.contains("בטל") { return .undo }
-    if t.contains("תוצאה") { return .score }
+    // Undo: synonyms
+    if t.contains("בטל") || t.contains("חזור") || t.contains("אחורה") { return .undo }
+    // Score: synonyms
+    if t.contains("תוצאה") || t.contains("תן תוצאה") { return .score }
 
-    if t == "אחד" { return .pointA }
-    if t == "שתיים" || t == "שתים" { return .pointB }
+    // Point A/B by number: whole-word only to avoid false positives
+    if normalizedContainsWord(t, word: "אחד") { return .pointA }
+    if normalizedContainsWord(t, word: "שתיים") || normalizedContainsWord(t, word: "שתים") { return .pointB }
 
     let hasPoint = raw.contains("נקודה") || raw.contains("תן") || raw.contains("תני") || raw.contains("תנו")
     let hasTo = raw.contains("ל")
 
     if hasPoint && hasTo {
-        if !a.isEmpty && t.contains(a) { return .pointA }
-        if !b.isEmpty && t.contains(b) { return .pointB }
+        if a.count >= 2, t.contains(a) { return .pointA }
+        if b.count >= 2, t.contains(b) { return .pointB }
         return .none
     }
 
-    if !a.isEmpty && t.contains(a) { return .pointA }
-    if !b.isEmpty && t.contains(b) { return .pointB }
+    // Direct name match: require minimum length and word-boundary to avoid common words
+    if a.count >= 2, normalizedContainsWord(t, word: a) { return .pointA }
+    if b.count >= 2, normalizedContainsWord(t, word: b) { return .pointB }
 
     return .none
 }
@@ -184,20 +216,20 @@ func parseCommandEnglish(_ text: String, playerA: String, playerB: String) -> Co
     if t.contains("undo") { return .undo }
     if t.contains("score") { return .score }
 
-    if t == "one" { return .pointA }
-    if t == "two" { return .pointB }
+    if normalizedContainsWord(t, word: "one") { return .pointA }
+    if normalizedContainsWord(t, word: "two") { return .pointB }
 
     let hasPoint = raw.contains("point") || raw.contains("give")
     let hasTo = raw.contains("to")
 
     if hasPoint && hasTo {
-        if !a.isEmpty && t.contains(a) { return .pointA }
-        if !b.isEmpty && t.contains(b) { return .pointB }
+        if a.count >= 2, t.contains(a) { return .pointA }
+        if b.count >= 2, t.contains(b) { return .pointB }
         return .none
     }
 
-    if !a.isEmpty && t.contains(a) { return .pointA }
-    if !b.isEmpty && t.contains(b) { return .pointB }
+    if a.count >= 2, normalizedContainsWord(t, word: a) { return .pointA }
+    if b.count >= 2, normalizedContainsWord(t, word: b) { return .pointB }
 
     return .none
 }
@@ -206,6 +238,86 @@ func parseCommandByLanguage(_ text: String, playerA: String, playerB: String, la
     switch lang {
     case .hebrew: return parseCommandHebrew(text, playerA: playerA, playerB: playerB)
     case .english: return parseCommandEnglish(text, playerA: playerA, playerB: playerB)
+    }
+}
+
+// MARK: - Command parsing debug / verification
+
+/// Call from debug or tests: run sample transcripts and return (transcript, normalized, command, note).
+func debugParseSamples(lang: AppLanguage, playerA: String = "אביעד", playerB: String = "ניב") -> [(String, String, Command, String)] {
+    let samples: [(String, AppLanguage)] = lang == .hebrew
+        ? [
+            ("אחד", .hebrew),
+            ("  אחד  ", .hebrew),
+            ("שתיים", .hebrew),
+            ("שתים", .hebrew),
+            ("בטל", .hebrew),
+            ("חזור", .hebrew),
+            ("תוצאה", .hebrew),
+            ("תן תוצאה", .hebrew),
+            ("נקודה לאביעד", .hebrew),
+            ("נקודה לניב", .hebrew),
+            ("אה אחד", .hebrew),
+            ("אח", .hebrew),
+        ]
+        : [
+            ("one", .english),
+            ("two", .english),
+            ("undo", .english),
+            ("score", .english),
+            ("point to john", .english),
+        ]
+    return samples.map { text, l in
+        let n = normalizedForCommand(text)
+        let cmd = parseCommandByLanguage(text, playerA: playerA, playerB: playerB, lang: l)
+        let note = cmd == .none ? "no match" : "ok"
+        return (text, n, cmd, note)
+    }
+}
+
+// MARK: - AI TTS Player (Cloudflare Worker -> Azure -> MP3)
+
+@MainActor
+final class AITTSPlayer: NSObject, AVAudioPlayerDelegate {
+    private var player: AVAudioPlayer?
+    private var onFinish: (() -> Void)?
+
+    func speak(endpoint: URL, text: String, onFinish: (() -> Void)? = nil) async throws {
+        self.onFinish = onFinish
+
+        var req = URLRequest(url: endpoint)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONSerialization.data(withJSONObject: ["text": text])
+
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+            throw URLError(.badServerResponse)
+        }
+
+        try? AVAudioSession.sharedInstance().setCategory(
+            .playback,
+            mode: .spokenAudio,
+            options: [.duckOthers, .allowBluetoothA2DP, .allowAirPlay]
+        )
+        try? AVAudioSession.sharedInstance().setActive(true, options: .notifyOthersOnDeactivation)
+
+        let p = try AVAudioPlayer(data: data)
+        p.delegate = self
+        p.prepareToPlay()
+        p.play()
+        player = p
+    }
+
+    func stop() {
+        player?.stop()
+        player = nil
+        onFinish = nil
+    }
+
+    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        onFinish?()
+        onFinish = nil
     }
 }
 
@@ -220,6 +332,9 @@ final class VoiceManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
 
     private let synthesizer = AVSpeechSynthesizer()
 
+    private let aiTTS = AITTSPlayer()
+    private let aiEndpoint = URL(string: "https://tennis-tts.aviadmerlin.workers.dev/")!
+
     @Published var appLanguage: AppLanguage = .hebrew
 
     @Published var isListening: Bool = false
@@ -230,10 +345,25 @@ final class VoiceManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
     @Published var playerBName: String = "ניב"
 
     @Published var state: MatchState = .init()
+
+    @Published var canUndo: Bool = false
+
     private var history: [MatchState] = []
 
     private var didHandleThisUtterance: Bool = false
     private var resumeListeningAfterSpeak: Bool = false
+
+    /// Debounce: require same command twice in a row (or final) before firing.
+    private var lastPartialCommand: Command = .none
+    private var lastPartialCommandCount: Int = 0
+
+    /// Cooldown (ms) after applying a command to avoid double triggers.
+    private static let commandCooldownMs: Int = 750
+    private var lastCommandAppliedTime: Date = .distantPast
+
+    /// Debug: optional overlay (off by default).
+    @Published var showSpeechDebug: Bool = false
+    @Published var speechDebugInfo: SpeechDebugInfo?
 
     override init() {
         super.init()
@@ -265,21 +395,24 @@ final class VoiceManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
 
     // MARK: Audio Session
 
-    private func preferBluetoothMicIfAvailable(_ session: AVAudioSession) {
+    /// Prefer Bluetooth HFP for voice when available; otherwise built-in mic is used (no forced override).
+    private func setPreferredInputForVoiceIfNeeded(_ session: AVAudioSession) {
         guard let inputs = session.availableInputs else { return }
         if let bt = inputs.first(where: { $0.portType == .bluetoothHFP }) {
             try? session.setPreferredInput(bt)
         }
+        // Else: leave default (built-in mic), which is better when phone is not close to mouth.
     }
 
+    /// Configure session for voice recognition: voice-optimized mode, then activate before starting engine.
     private func configureForListening() {
         let session = AVAudioSession.sharedInstance()
         do {
             try session.setCategory(.playAndRecord,
-                                    mode: .videoRecording,
-                                    options: [.allowBluetooth, .duckOthers])
+                                    mode: .voiceChat,
+                                    options: [.defaultToSpeaker, .allowBluetooth, .duckOthers])
             try session.setActive(true, options: .notifyOthersOnDeactivation)
-            preferBluetoothMicIfAvailable(session)
+            setPreferredInputForVoiceIfNeeded(session)
         } catch { }
     }
 
@@ -293,9 +426,29 @@ final class VoiceManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
         } catch { }
     }
 
-    // MARK: Speaking
+    // MARK: Speaking (AI first, system fallback)
 
     func speak(_ text: String) {
+        resumeListeningAfterSpeak = isListening
+        if isListening { stop() }
+
+        Task { @MainActor in
+            do {
+                try await aiTTS.speak(endpoint: aiEndpoint, text: text) {
+                    if self.resumeListeningAfterSpeak {
+                        self.resumeListeningAfterSpeak = false
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                            try? self.start()
+                        }
+                    }
+                }
+            } catch {
+                self.speakSystemFallback(text)
+            }
+        }
+    }
+
+    private func speakSystemFallback(_ text: String) {
         resumeListeningAfterSpeak = isListening
         if isListening { stop() }
 
@@ -319,7 +472,44 @@ final class VoiceManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
         }
     }
 
-    private func scoreToSpeak() -> String {
+    // MARK: Speak formatting
+    // ✅ Point updates: points only
+    // ✅ When someone wins a game: announce game winner + games score
+
+    private func pointsOnlyText() -> String {
+        let a = safeA()
+        let b = safeB()
+
+        switch appLanguage {
+        case .english:
+            if isDeuce(state) { return "Deuce." }
+            if state.aPoint == .adv { return "Advantage \(a)." }
+            if state.bPoint == .adv { return "Advantage \(b)." }
+            return "\(a) \(pointWordEN(state.aPoint)), \(b) \(pointWordEN(state.bPoint))."
+        case .hebrew:
+            if isDeuce(state) { return "דוס." }
+            if state.aPoint == .adv { return "יתרון \(a)." }
+            if state.bPoint == .adv { return "יתרון \(b)." }
+            return "\(a) \(pointWordHE(state.aPoint)), \(b) \(pointWordHE(state.bPoint))."
+        }
+    }
+
+    private func gameWinText(winnerIsA: Bool) -> String {
+        let a = safeA()
+        let b = safeB()
+
+        switch appLanguage {
+        case .english:
+            let winner = winnerIsA ? a : b
+            return "Game \(winner). Games: \(a) \(state.aGames), \(b) \(state.bGames)."
+        case .hebrew:
+            let winner = winnerIsA ? a : b
+            return "משחקון ל-\(winner). משחקונים: \(a) \(state.aGames), \(b) \(state.bGames)."
+        }
+    }
+
+    private func fullScoreToSpeak() -> String {
+        // For the "Speak score" button: always include games
         let a = safeA()
         let b = safeB()
 
@@ -335,6 +525,7 @@ final class VoiceManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
                 return "Advantage \(b). Games: \(a) \(state.aGames), \(b) \(state.bGames)."
             }
             return "\(a) \(pointWordEN(state.aPoint)), \(b) \(pointWordEN(state.bPoint)). Games: \(a) \(state.aGames), \(b) \(state.bGames)."
+
         case .hebrew:
             if isDeuce(state) {
                 return "דוס. משחקונים: \(a) \(state.aGames), \(b) \(state.bGames)."
@@ -349,38 +540,49 @@ final class VoiceManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
         }
     }
 
-    func speakScore() { speak(scoreToSpeak()) }
+    func speakScore() { speak(fullScoreToSpeak()) }
 
     // MARK: Game
 
-    private func pushHistory() { history.append(state) }
+    private func pushHistory() {
+        history.append(state)
+        canUndo = !history.isEmpty
+    }
 
     func undo() {
         guard let prev = history.popLast() else { return }
         state = prev
+        canUndo = !history.isEmpty
         status = (appLanguage == .hebrew) ? "בוטל" : "Undone"
-        speakScore()
+        speak(fullScoreToSpeak())
     }
 
     func resetMatch() {
         history.removeAll()
+        canUndo = false
         state = .init()
         status = (appLanguage == .hebrew) ? "משחק חדש" : "New match"
-        speak((appLanguage == .hebrew ? "משחק חדש. " : "New match. ") + scoreToSpeak())
+        speak((appLanguage == .hebrew ? "משחק חדש. " : "New match. ") + fullScoreToSpeak())
     }
 
     private func apply(_ cmd: Command) {
         switch cmd {
         case .pointA:
+            let prev = state
             pushHistory()
             state = pointToA(state)
             status = (appLanguage == .hebrew) ? "נקודה ל-\(safeA())" : "Point to \(safeA())"
-            speakScore()
+            let gameWon = (state.aGames != prev.aGames)
+            speak(gameWon ? gameWinText(winnerIsA: true) : pointsOnlyText())
+
         case .pointB:
+            let prev = state
             pushHistory()
             state = pointToB(state)
             status = (appLanguage == .hebrew) ? "נקודה ל-\(safeB())" : "Point to \(safeB())"
-            speakScore()
+            let gameWon = (state.bGames != prev.bGames)
+            speak(gameWon ? gameWinText(winnerIsA: false) : pointsOnlyText())
+
         case .undo:
             undo()
         case .score:
@@ -394,6 +596,8 @@ final class VoiceManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
 
     func start() throws {
         guard !isListening else { return }
+
+        aiTTS.stop()
 
         rebuildRecognizer()
         guard let recognizer, recognizer.isAvailable else {
@@ -411,16 +615,23 @@ final class VoiceManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
 
         switch appLanguage {
         case .hebrew:
-            request.contextualStrings = [safeA(), safeB(), "נקודה", "תן", "ל", "אחד", "שתיים", "בטל", "תוצאה"]
+            request.contextualStrings = [
+                safeA(), safeB(),
+                "נקודה", "תן", "תני", "תנו", "ל", "אחד", "שתיים", "שתים",
+                "בטל", "חזור", "אחורה", "תוצאה", "תן תוצאה",
+            ]
         case .english:
-            request.contextualStrings = [safeA(), safeB(), "point", "to", "one", "two", "undo", "score"]
+            request.contextualStrings = [safeA(), safeB(), "point", "give", "to", "one", "two", "undo", "score"]
         }
 
         didHandleThisUtterance = false
+        lastPartialCommand = .none
+        lastPartialCommandCount = 0
 
         let input = audioEngine.inputNode
+        let format = input.inputFormat(forBus: 0)
         input.removeTap(onBus: 0)
-        input.installTap(onBus: 0, bufferSize: 1024, format: nil) { buffer, _ in
+        input.installTap(onBus: 0, bufferSize: 2048, format: format) { buffer, _ in
             self.request?.append(buffer)
         }
 
@@ -442,18 +653,45 @@ final class VoiceManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
                                                      playerB: self.playerBName,
                                                      lang: self.appLanguage)
 
-                    if cmd != .none, self.didHandleThisUtterance == false {
-                        self.didHandleThisUtterance = true
-                        self.apply(cmd)
-                        self.stop()
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
-                            try? self.start()
+                    let cooldownPassed = Date().timeIntervalSince(self.lastCommandAppliedTime) * 1000 >= Double(Self.commandCooldownMs)
+                    let canFire = !self.didHandleThisUtterance && cooldownPassed
+
+                    if result.isFinal {
+                        if cmd != .none, canFire {
+                            self.fireCommand(cmd)
+                        } else {
+                            self.lastPartialCommand = .none
+                            self.lastPartialCommandCount = 0
+                            self.stop()
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { try? self.start() }
                         }
-                    } else if result.isFinal {
-                        self.stop()
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
-                            try? self.start()
+                    } else {
+                        if cmd == self.lastPartialCommand {
+                            self.lastPartialCommandCount += 1
+                        } else {
+                            self.lastPartialCommand = cmd
+                            self.lastPartialCommandCount = 1
                         }
+                        let stablePartial = cmd != .none && self.lastPartialCommandCount >= 2 && canFire
+                        if stablePartial {
+                            self.fireCommand(cmd)
+                        }
+                    }
+
+                    if self.showSpeechDebug {
+                        let reason: String
+                        if result.isFinal {
+                            reason = cmd != .none && canFire ? "final+cooldown ok" : (cmd == .none ? "final, no command" : "final, cooldown/dup")
+                        } else {
+                            reason = self.lastPartialCommandCount >= 2 && cmd != .none ? "2x partial" : "partial"
+                        }
+                        self.speechDebugInfo = SpeechDebugInfo(
+                            rawTranscript: heard,
+                            normalizedTranscript: normalizedForCommand(heard),
+                            detectedCommand: cmd,
+                            reason: reason,
+                            timestamp: Date()
+                        )
                     }
                 }
             }
@@ -465,6 +703,16 @@ final class VoiceManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
                 }
             }
         }
+    }
+
+    private func fireCommand(_ cmd: Command) {
+        didHandleThisUtterance = true
+        lastCommandAppliedTime = Date()
+        lastPartialCommand = .none
+        lastPartialCommandCount = 0
+        apply(cmd)
+        stop()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { try? self.start() }
     }
 
     func stop() {
@@ -480,170 +728,302 @@ final class VoiceManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
     }
 }
 
-// MARK: - UI (Professional Look)
+// MARK: - UI (Figma Premium)
 
 struct ContentView: View {
     @StateObject private var vm = VoiceManager()
 
-    private var startStopTitle: String {
-        if vm.isListening { return vm.appLanguage == .hebrew ? "עצור" : "Stop" }
-        return vm.appLanguage == .hebrew ? "התחל" : "Start"
-    }
+    private var bgTop: Color { Color(red: 0.06, green: 0.08, blue: 0.12) }
+    private var bgBottom: Color { Color(red: 0.03, green: 0.05, blue: 0.09) }
 
-    private var startStopIcon: String { vm.isListening ? "stop.fill" : "mic.fill" }
+    private var accentGreen: Color { Color(red: 0.20, green: 1.00, blue: 0.35) }
 
     var body: some View {
         ZStack {
-            LinearGradient(colors: [Color.blue.opacity(0.65), Color.indigo],
-                           startPoint: .topLeading,
-                           endPoint: .bottomTrailing)
-            .ignoresSafeArea()
+            LinearGradient(colors: [bgTop, bgBottom], startPoint: .top, endPoint: .bottom)
+                .ignoresSafeArea()
 
             VStack(spacing: 18) {
+                languagePicker
 
-                HStack {
-                    Text(vm.appLanguage == .hebrew ? "שופט טניס" : "Tennis Ref")
-                        .font(.system(.largeTitle, design: .rounded, weight: .bold))
-                        .foregroundStyle(.white)
-                    Spacer()
-                }
-                .padding(.horizontal)
+                playersRow
 
-                Picker("Language", selection: $vm.appLanguage) {
-                    ForEach(AppLanguage.allCases) { lang in
-                        Text(lang.rawValue).tag(lang)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .padding(.horizontal)
-                .onChange(of: vm.appLanguage) { _ in
-                    if vm.isListening {
-                        vm.stop()
-                        try? vm.start()
-                    }
-                }
+                serverDot
 
-                // Players Card
-                VStack(spacing: 10) {
-                    HStack(spacing: 10) {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(vm.appLanguage == .hebrew ? "שחקן 1" : "Player 1")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            TextField(vm.appLanguage == .hebrew ? "שם..." : "Name...", text: $vm.playerAName)
-                                .textFieldStyle(.roundedBorder)
-                                .autocorrectionDisabled(true)
-                                .textInputAutocapitalization(.never)
-                        }
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(vm.appLanguage == .hebrew ? "שחקן 2" : "Player 2")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            TextField(vm.appLanguage == .hebrew ? "שם..." : "Name...", text: $vm.playerBName)
-                                .textFieldStyle(.roundedBorder)
-                                .autocorrectionDisabled(true)
-                                .textInputAutocapitalization(.never)
-                        }
-                    }
-                }
-                .padding()
-                .background(.ultraThinMaterial)
-                .cornerRadius(22)
-                .padding(.horizontal)
+                scoreCard
 
-                // Score Card
-                VStack(spacing: 8) {
-                    Text("\(pointLabelUI(vm.state.aPoint))  :  \(pointLabelUI(vm.state.bPoint))")
-                        .font(.system(size: 72, weight: .bold, design: .rounded))
-                        .foregroundStyle(.white)
+                statusPill
 
-                    Text((vm.appLanguage == .hebrew ? "משחקונים " : "Games ") + "\(vm.state.aGames) : \(vm.state.bGames)")
-                        .font(.system(.title2, design: .rounded, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.9))
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 26)
-                .background(.ultraThinMaterial)
-                .cornerRadius(28)
-                .shadow(radius: 18)
-                .padding(.horizontal)
+                micButton
 
-                // Status Card
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(vm.appLanguage == .hebrew ? "סטטוס" : "Status")
-                        .font(.caption)
-                        .foregroundStyle(.white.opacity(0.75))
-                    Text(vm.status)
-                        .foregroundStyle(.white)
-                        .font(.system(.body, design: .rounded))
-                    if !vm.lastHeard.isEmpty {
-                        Text((vm.appLanguage == .hebrew ? "שמעתי: " : "Heard: ") + vm.lastHeard)
-                            .foregroundStyle(.white.opacity(0.75))
-                            .font(.footnote)
-                    }
-                }
-                .padding()
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(.ultraThinMaterial)
-                .cornerRadius(22)
-                .padding(.horizontal)
+                bottomButtons
 
-                // Controls
-                VStack(spacing: 12) {
-                    Button {
-                        if vm.isListening { vm.stop() } else { try? vm.start() }
-                    } label: {
-                        Label(startStopTitle, systemImage: startStopIcon)
-                            .font(.system(.headline, design: .rounded))
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 14)
-                    }
-                    .background(vm.isListening ? Color.red.opacity(0.9) : Color.green.opacity(0.9))
-                    .foregroundStyle(.white)
-                    .cornerRadius(18)
+                speakButton
 
-                    HStack(spacing: 12) {
-                        Button {
-                            vm.undo()
-                        } label: {
-                            Label(vm.appLanguage == .hebrew ? "בטל" : "Undo", systemImage: "arrow.uturn.backward")
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 12)
-                        }
-                        .background(.orange.opacity(0.9))
-                        .foregroundStyle(.white)
-                        .cornerRadius(16)
-
-                        Button {
-                            vm.resetMatch()
-                        } label: {
-                            Label(vm.appLanguage == .hebrew ? "חדש" : "New", systemImage: "arrow.counterclockwise")
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 12)
-                        }
-                        .background(.blue.opacity(0.85))
-                        .foregroundStyle(.white)
-                        .cornerRadius(16)
-                    }
-
-                    Button {
-                        vm.speakScore()
-                    } label: {
-                        Label(vm.appLanguage == .hebrew ? "הקרא תוצאה" : "Speak Score", systemImage: "speaker.wave.2.fill")
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 12)
-                    }
-                    .background(.white.opacity(0.18))
-                    .foregroundStyle(.white)
-                    .cornerRadius(16)
-                }
-                .padding(.horizontal)
-
-                Spacer(minLength: 8)
+                Spacer(minLength: 10)
             }
-            .padding(.top, 14)
+            .padding(.horizontal, 18)
+            .padding(.top, 12)
+
+            if vm.showSpeechDebug, let info = vm.speechDebugInfo {
+                speechDebugOverlay(info: info)
+            }
         }
         .onAppear { Task { await vm.requestPermissions() } }
+    }
+
+    private func speechDebugOverlay(info: SpeechDebugInfo) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Speech debug")
+                .font(.system(size: 12, weight: .bold, design: .monospaced))
+                .foregroundStyle(.white.opacity(0.9))
+            Text("Raw: \(info.rawTranscript)")
+                .font(.system(size: 11, weight: .regular, design: .monospaced))
+                .foregroundStyle(.white.opacity(0.8))
+                .lineLimit(2)
+            Text("Norm: \(info.normalizedTranscript)")
+                .font(.system(size: 11, weight: .regular, design: .monospaced))
+                .foregroundStyle(.white.opacity(0.8))
+                .lineLimit(2)
+            Text("Cmd: \(String(describing: info.detectedCommand))")
+                .font(.system(size: 11, weight: .regular, design: .monospaced))
+                .foregroundStyle(.white.opacity(0.8))
+            Text("Reason: \(info.reason)")
+                .font(.system(size: 11, weight: .regular, design: .monospaced))
+                .foregroundStyle(.white.opacity(0.7))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(Color.black.opacity(0.75))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .padding(.horizontal, 18)
+        .padding(.bottom, 24)
+        .frame(maxHeight: .infinity, alignment: .bottom)
+    }
+
+    private var languagePicker: some View {
+        Picker("Language", selection: $vm.appLanguage) {
+            ForEach(AppLanguage.allCases) { lang in
+                Text(lang.rawValue).tag(lang)
+            }
+        }
+        .pickerStyle(.segmented)
+        .onChange(of: vm.appLanguage) { _ in
+            if vm.isListening {
+                vm.stop()
+                try? vm.start()
+            }
+        }
+    }
+
+    private var playersRow: some View {
+        HStack(spacing: 14) {
+            playerCard(title: vm.appLanguage == .hebrew ? "שחקן 1" : "Player 1", text: $vm.playerAName)
+            playerCard(title: vm.appLanguage == .hebrew ? "שחקן 2" : "Player 2", text: $vm.playerBName)
+        }
+    }
+
+    private func playerCard(title: String, text: Binding<String>) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title)
+                .font(.system(size: 16, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white)
+
+            Text(vm.appLanguage == .hebrew ? "סטים: 0 | משחקונים: 0" : "Sets: 0 | Games: 0")
+                .font(.system(size: 12, weight: .medium, design: .rounded))
+                .foregroundStyle(.white.opacity(0.55))
+
+            TextField(vm.appLanguage == .hebrew ? "שם..." : "Name...", text: text)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled(true)
+                .font(.system(size: 16, weight: .medium, design: .rounded))
+                .foregroundStyle(.white.opacity(0.95))
+                .padding(.vertical, 10)
+                .padding(.horizontal, 12)
+                .background(Color.white.opacity(0.06))
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(Color.white.opacity(0.10), lineWidth: 1)
+                )
+        }
+        .padding(16)
+        .premiumCard()
+    }
+
+    private var serverDot: some View {
+        Circle()
+            .fill(accentGreen)
+            .frame(width: 16, height: 16)
+            .shadow(color: accentGreen.opacity(0.7), radius: 14, x: 0, y: 0)
+            .padding(.top, -6)
+    }
+
+    private var scoreCard: some View {
+        VStack(spacing: 12) {
+            HStack(alignment: .center, spacing: 14) {
+                Text(pointLabelUI(vm.state.aPoint))
+                    .font(.system(size: 88, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+
+                Text(":")
+                    .font(.system(size: 64, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.35))
+                    .padding(.top, 10)
+
+                Text(pointLabelUI(vm.state.bPoint))
+                    .font(.system(size: 88, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+            }
+
+            Text(vm.appLanguage == .hebrew
+                 ? "משחקונים: \(vm.state.aGames) : \(vm.state.bGames)"
+                 : "Games: \(vm.state.aGames) : \(vm.state.bGames)")
+            .font(.system(size: 18, weight: .semibold, design: .rounded))
+            .foregroundStyle(.white.opacity(0.70))
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 26)
+        .premiumCard(cornerRadius: 28)
+    }
+
+    private var statusPill: some View {
+        HStack(spacing: 10) {
+            Text(vm.appLanguage == .hebrew ? "סטטוס:" : "Status:")
+                .foregroundStyle(.white.opacity(0.60))
+                .font(.system(size: 15, weight: .semibold, design: .rounded))
+
+            Text(vm.status)
+                .foregroundStyle(.white.opacity(0.92))
+                .font(.system(size: 15, weight: .semibold, design: .rounded))
+
+            Spacer()
+        }
+        .padding(.vertical, 12)
+        .padding(.horizontal, 16)
+        .premiumCard(cornerRadius: 22)
+        .overlay(alignment: .trailing) {
+            if !vm.lastHeard.isEmpty {
+                Text(vm.lastHeard)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .foregroundStyle(.white.opacity(0.45))
+                    .font(.system(size: 13, weight: .medium, design: .rounded))
+                    .padding(.trailing, 14)
+            }
+        }
+        .onLongPressGesture(minimumDuration: 0.8) {
+            vm.showSpeechDebug.toggle()
+        }
+    }
+
+    private var micButton: some View {
+        Button {
+            if vm.isListening { vm.stop() } else { try? vm.start() }
+        } label: {
+            ZStack {
+                Circle()
+                    .fill(Color.white.opacity(0.06))
+                    .frame(width: 92, height: 92)
+                    .overlay(
+                        Circle()
+                            .stroke(Color.white.opacity(0.14), lineWidth: 1)
+                    )
+
+                Image(systemName: "mic.fill")
+                    .font(.system(size: 30, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.92))
+            }
+        }
+        .buttonStyle(.plain)
+        .overlay {
+            Circle()
+                .stroke(vm.isListening ? accentGreen.opacity(0.9) : Color.clear, lineWidth: 3)
+                .frame(width: 102, height: 102)
+                .shadow(color: vm.isListening ? accentGreen.opacity(0.6) : .clear, radius: 18)
+                .animation(.easeInOut(duration: 0.25), value: vm.isListening)
+        }
+        .padding(.top, 2)
+    }
+
+    private var bottomButtons: some View {
+        HStack(spacing: 14) {
+            Button {
+                vm.undo()
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "arrow.uturn.backward")
+                    Text(vm.appLanguage == .hebrew ? "בטל" : "Undo")
+                }
+                .font(.system(size: 18, weight: .semibold, design: .rounded))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 16)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.white.opacity(vm.canUndo ? 0.80 : 0.35))
+            .premiumCardButton(isEnabled: vm.canUndo)
+            .disabled(!vm.canUndo)
+
+            Button {
+                vm.resetMatch()
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "plus.circle")
+                    Text(vm.appLanguage == .hebrew ? "חדש" : "New")
+                }
+                .font(.system(size: 18, weight: .semibold, design: .rounded))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 16)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.white.opacity(0.90))
+            .premiumCardButton(isEnabled: true)
+        }
+        .padding(.top, 6)
+    }
+
+    private var speakButton: some View {
+        Button {
+            vm.speakScore()
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "speaker.wave.2.fill")
+                Text(vm.appLanguage == .hebrew ? "הקרא תוצאה" : "Speak score")
+            }
+            .font(.system(size: 16, weight: .semibold, design: .rounded))
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 14)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.white.opacity(0.80))
+        .premiumCardButton(isEnabled: true, cornerRadius: 18)
+        .padding(.top, 2)
+    }
+}
+
+// MARK: - Styling Helpers
+
+private extension View {
+    func premiumCard(cornerRadius: CGFloat = 24) -> some View {
+        self
+            .background(Color.white.opacity(0.06))
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .stroke(Color.white.opacity(0.10), lineWidth: 1)
+            )
+            .shadow(color: Color.black.opacity(0.35), radius: 24, x: 0, y: 16)
+    }
+
+    func premiumCardButton(isEnabled: Bool, cornerRadius: CGFloat = 22) -> some View {
+        self
+            .background(Color.white.opacity(isEnabled ? 0.06 : 0.03))
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .stroke(Color.white.opacity(isEnabled ? 0.12 : 0.06), lineWidth: 1)
+            )
+            .shadow(color: Color.black.opacity(isEnabled ? 0.30 : 0.18), radius: 20, x: 0, y: 14)
     }
 }
 

@@ -23,9 +23,9 @@ struct SplashView: View {
             Image("AppLogo")
                 .resizable()
                 .aspectRatio(contentMode: .fill)
-                .frame(width: 140, height: 140)
+                .frame(width: 220, height: 220)
                 .clipShape(Circle())
-                .blur(radius: 24)
+                .blur(radius: 32)
                 .opacity(0.5)
                 .scaleEffect(scale)
 
@@ -33,13 +33,13 @@ struct SplashView: View {
             Image("AppLogo")
                 .resizable()
                 .aspectRatio(contentMode: .fill)
-                .frame(width: 120, height: 120)
+                .frame(width: 190, height: 190)
                 .clipShape(Circle())
                 .overlay(
                     Circle()
                         .stroke(Color.primary.opacity(0.08), lineWidth: 1)
                 )
-                .shadow(color: .accentColor.opacity(0.25), radius: 20, x: 0, y: 0)
+                .shadow(color: .accentColor.opacity(0.25), radius: 24, x: 0, y: 0)
                 .scaleEffect(scale)
                 .opacity(opacity)
         }
