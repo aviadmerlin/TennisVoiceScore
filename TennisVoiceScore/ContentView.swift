@@ -176,6 +176,46 @@ func normalizedContainsWord(_ t: String, word: String) -> Bool {
     return t == w || t.hasPrefix(w + " ") || t.hasSuffix(" " + w) || t.contains(" " + w + " ")
 }
 
+/// Set to true to log raw transcript and matched rule for Hebrew parsing (validate fix).
+private let kDebugHebrewParse = false
+
+/// Point keyword = "נקודה" OR a standalone "." (iOS often transcribes "נקודה" as ".").
+/// Standalone "." = at start/end or surrounded by space, or immediately followed by "ל" (e.g. ".לאביעד").
+/// Returns the index of the first such occurrence, or nil.
+private func firstPointKeywordIndex(in raw: String) -> String.Index? {
+    if let r = raw.range(of: "נקודה") { return r.lowerBound }
+    var i = raw.startIndex
+    while i < raw.endIndex {
+        if raw[i] == "." {
+            let atStart = i == raw.startIndex
+            let after = raw.index(after: i)
+            let atEnd = after >= raw.endIndex
+            let prevIsSpace = !atStart && raw[raw.index(before: i)].isWhitespace
+            let nextChar = atEnd ? nil : raw[after]
+            let nextIsSpaceOrL = nextChar?.isWhitespace == true || nextChar == "ל"
+            if (atStart || prevIsSpace) && (atEnd || nextIsSpaceOrL) { return i }
+        }
+        i = raw.index(after: i)
+    }
+    return nil
+}
+
+/// Finds first "ל" (to) followed by player name (ignoring spaces/punctuation after "ל").
+/// Returns (command, index of "ל") or nil.
+private func findToPlayerMatch(raw: String, a: String, b: String) -> (Command, String.Index)? {
+    var searchStart = raw.startIndex
+    while searchStart < raw.endIndex, let range = raw.range(of: "ל", range: searchStart..<raw.endIndex) {
+        var after = String(raw[range.upperBound...])
+        while after.first?.isWhitespace == true || after.first == "." {
+            after = String(after.dropFirst())
+        }
+        if !a.isEmpty, after.hasPrefix(a) { return (.pointA, range.lowerBound) }
+        if !b.isEmpty, after.hasPrefix(b) { return (.pointB, range.lowerBound) }
+        searchStart = raw.index(after: range.lowerBound)
+    }
+    return nil
+}
+
 func parseCommandHebrew(_ text: String, playerA: String, playerB: String) -> Command {
     let raw = text.lowercased()
     let t = normalizedForCommand(text)
@@ -183,23 +223,38 @@ func parseCommandHebrew(_ text: String, playerA: String, playerB: String) -> Com
     let b = normalizedForCommand(playerB)
 
     // Undo: synonyms
-    if t.contains("בטל") || t.contains("חזור") || t.contains("אחורה") { return .undo }
+    if t.contains("בטל") || t.contains("חזור") || t.contains("אחורה") {
+        if kDebugHebrewParse { print("[HebrewParse] raw: \"\(raw)\" → undo (בטל/חזור/אחורה)") }
+        return .undo
+    }
     // Score: synonyms
-    if t.contains("תוצאה") || t.contains("תן תוצאה") { return .score }
-
-    // Point A/B by number: whole-word only
-    if normalizedContainsWord(t, word: "אחד") { return .pointA }
-    if normalizedContainsWord(t, word: "שתיים") || normalizedContainsWord(t, word: "שתים") { return .pointB }
-
-    // Point by name: STRICT — only "נקודה ל{playerName}" (exact substring structure)
-    let needle = "נקודה ל"
-    if raw.contains(needle), let range = raw.range(of: needle) {
-        let after = String(raw[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
-        if !a.isEmpty, after.hasPrefix(a) { return .pointA }
-        if !b.isEmpty, after.hasPrefix(b) { return .pointB }
+    if t.contains("תוצאה") || t.contains("תן תוצאה") {
+        if kDebugHebrewParse { print("[HebrewParse] raw: \"\(raw)\" → score (תוצאה)") }
+        return .score
     }
 
-    return .none
+    // Point A/B by number: whole-word only
+    if normalizedContainsWord(t, word: "אחד") {
+        if kDebugHebrewParse { print("[HebrewParse] raw: \"\(raw)\" → pointA (אחד)") }
+        return .pointA
+    }
+    if normalizedContainsWord(t, word: "שתיים") || normalizedContainsWord(t, word: "שתים") {
+        if kDebugHebrewParse { print("[HebrewParse] raw: \"\(raw)\" → pointB (שתיים/שתים)") }
+        return .pointB
+    }
+
+    // Point by name: (A) transcript has point keyword ("נקודה" or standalone ".") AND (B) "ל" + player name
+    // Order: point keyword must appear before or at "ל" to avoid "אביעד נקודה"
+    guard let pkIndex = firstPointKeywordIndex(in: raw),
+          let (cmd, lIndex) = findToPlayerMatch(raw: raw, a: a, b: b),
+          pkIndex <= lIndex else {
+        if kDebugHebrewParse, firstPointKeywordIndex(in: raw) != nil || findToPlayerMatch(raw: raw, a: a, b: b) != nil {
+            print("[HebrewParse] raw: \"\(raw)\" → none (point keyword / ל+name structure failed)")
+        }
+        return .none
+    }
+    if kDebugHebrewParse { print("[HebrewParse] raw: \"\(raw)\" → \(cmd) (נקודה/. + ל + name)") }
+    return cmd
 }
 
 func parseCommandEnglish(_ text: String, playerA: String, playerB: String) -> Command {
