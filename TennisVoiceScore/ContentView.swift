@@ -182,9 +182,18 @@ private let kDebugHebrewParse = false
 /// Returns true if transcript contains a point keyword: the word "נקודה" or a dot that may stand for "נקודה".
 private func containsPointKeyword(raw: String, normalized: String) -> Bool {
     if raw.contains("נקודה") { return true }
+    if normalizedContainsWord(normalized, word: "נקדה") { return true }
+    if normalizedContainsWord(normalized, word: "נקודות") { return true }
     // iOS often transcribes "נקודה" as ".", treat it as a point keyword (only used together with a player name).
     if raw.contains(".") { return true }
     return false
+}
+
+/// Phrase-level whole-boundary match over normalized transcript.
+private func normalizedContainsPhrase(_ t: String, phrase: String) -> Bool {
+    let p = normalizedForCommand(phrase)
+    guard !p.isEmpty else { return false }
+    return normalizedContainsWord(t, word: p)
 }
 
 /// Checks for the pattern "{name} נקודה" or "{name} ." in the raw transcript (lowercased).
@@ -206,6 +215,50 @@ private func hasNamePlusPoint(raw: String, name: String) -> (Bool, Bool) {
         return (true, true)
     }
     return (false, false)
+}
+
+/// Handles ASR cases where "נקודה" is transcribed as '.' in either order:
+/// - "{name}." / "{name} ."
+/// - ". {name}" / ". ל{name}"
+private func hasDotPointWithName(raw: String, name: String) -> Bool {
+    let lower = raw
+    let n = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    guard !n.isEmpty else { return false }
+
+    if lower.contains("\(n).") || lower.contains("\(n) .") { return true }
+    if lower.contains(". \(n)") || lower.contains(".ל\(n)") || lower.contains(". ל\(n)") { return true }
+
+    // If recognition inserted only '.' and the phrase still contains exactly one player name,
+    // allow this as a point command for that player.
+    if lower.contains("."), lower.contains(n) { return true }
+    return false
+}
+
+/// Robust Hebrew matching for player-by-name point commands.
+/// Supports forms like:
+/// - "{name} נקודה"
+/// - "ל{name} נקודה"
+/// - "נקודה ל{name}" (and common ASR variants of נקודה)
+private func matchesHebrewPointForName(raw: String, normalized: String, name: String) -> Bool {
+    let n = normalizedForCommand(name)
+    guard n.count >= 2 else { return false }
+
+    let pointWords = ["נקודה", "נקדה", "נקודות"]
+
+    for pw in pointWords {
+        if normalizedContainsPhrase(normalized, phrase: "\(n) \(pw)") { return true }
+        if normalizedContainsPhrase(normalized, phrase: "ל\(n) \(pw)") { return true }
+        if normalizedContainsPhrase(normalized, phrase: "ל \(n) \(pw)") { return true }
+
+        if normalizedContainsPhrase(normalized, phrase: "\(pw) ל\(n)") { return true }
+        if normalizedContainsPhrase(normalized, phrase: "\(pw) ל \(n)") { return true }
+    }
+
+    if hasDotPointWithName(raw: raw, name: name) { return true }
+
+    // Keep raw-dot fallback for transcripts like "{name}."
+    let (namePlusPoint, _) = hasNamePlusPoint(raw: raw, name: name)
+    return namePlusPoint
 }
 
 func parseCommandHebrew(_ text: String, playerA: String, playerB: String) -> Command {
@@ -236,18 +289,40 @@ func parseCommandHebrew(_ text: String, playerA: String, playerB: String) -> Com
         return .pointB
     }
 
-    // Point by name: "{name} נקודה" or "{name} ." (iOS may transcribe "נקודה" as ".")
+    // Point by player name with Hebrew point keyword variants.
     if containsPointKeyword(raw: raw, normalized: t) {
-        let (aMatch, aViaDot) = hasNamePlusPoint(raw: raw, name: playerA)
-        if aMatch {
+        let aMatch = matchesHebrewPointForName(raw: raw, normalized: t, name: playerA)
+        let bMatch = matchesHebrewPointForName(raw: raw, normalized: t, name: playerB)
+
+        if aMatch, !bMatch {
+            if kDebugHebrewParse { print("[HebrewParse] raw: \"\(raw)\" → pointA (name+point)") }
+            return .pointA
+        }
+        if bMatch, !aMatch {
+            if kDebugHebrewParse { print("[HebrewParse] raw: \"\(raw)\" → pointB (name+point)") }
+            return .pointB
+        }
+
+        // If both match (rare, e.g. both names mentioned), prefer earliest name appearance.
+        if aMatch && bMatch {
+            let aPos = aNorm.isEmpty ? nil : t.range(of: aNorm)?.lowerBound
+            let bPos = bNorm.isEmpty ? nil : t.range(of: bNorm)?.lowerBound
+            if let aPos, let bPos {
+                return aPos <= bPos ? .pointA : .pointB
+            }
+        }
+
+        // Backward-compatible fallback: strict raw "{name} נקודה" / "{name}." check.
+        let (aStrict, aViaDot) = hasNamePlusPoint(raw: raw, name: playerA)
+        if aStrict {
             if kDebugHebrewParse {
                 let reason = aViaDot ? "playerA + dot" : "playerA + נקודה"
                 print("[HebrewParse] raw: \"\(raw)\" → pointA (\(reason))")
             }
             return .pointA
         }
-        let (bMatch, bViaDot) = hasNamePlusPoint(raw: raw, name: playerB)
-        if bMatch {
+        let (bStrict, bViaDot) = hasNamePlusPoint(raw: raw, name: playerB)
+        if bStrict {
             if kDebugHebrewParse {
                 let reason = bViaDot ? "playerB + dot" : "playerB + נקודה"
                 print("[HebrewParse] raw: \"\(raw)\" → pointB (\(reason))")
@@ -308,6 +383,8 @@ func debugParseSamples(lang: AppLanguage, playerA: String = "אביעד", player
             ("חזור", .hebrew),
             ("תוצאה", .hebrew),
             ("תן תוצאה", .hebrew),
+            ("אביעד נקודה", .hebrew),
+            ("לניב נקודה", .hebrew),
             ("נקודה לאביעד", .hebrew),
             ("נקודה לניב", .hebrew),
             ("אה אחד", .hebrew),
@@ -416,6 +493,23 @@ final class VoiceManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
     /// Cooldown (ms) after applying a command to avoid double triggers.
     private static let commandCooldownMs: Int = 750
     private var lastCommandAppliedTime: Date = .distantPast
+
+    /// Some partial transcripts are strong enough to execute immediately (without waiting for 2x repeat/final).
+    private func shouldFireImmediatelyOnPartial(heard: String, cmd: Command) -> Bool {
+        guard cmd == .pointA || cmd == .pointB else { return false }
+
+        switch appLanguage {
+        case .hebrew:
+            let raw = heard.lowercased()
+            let t = normalizedForCommand(heard)
+            if !containsPointKeyword(raw: raw, normalized: t) { return false }
+            let a = matchesHebrewPointForName(raw: raw, normalized: t, name: playerAName)
+            let b = matchesHebrewPointForName(raw: raw, normalized: t, name: playerBName)
+            return a || b
+        case .english:
+            return false
+        }
+    }
 
     /// Debug: optional overlay (off by default).
     @Published var showSpeechDebug: Bool = false
@@ -744,8 +838,9 @@ final class VoiceManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
                             self.lastPartialCommand = cmd
                             self.lastPartialCommandCount = 1
                         }
+                        let immediatePartial = cmd != .none && canFire && self.shouldFireImmediatelyOnPartial(heard: heard, cmd: cmd)
                         let stablePartial = cmd != .none && self.lastPartialCommandCount >= 2 && canFire
-                        if stablePartial {
+                        if immediatePartial || stablePartial {
                             self.fireCommand(cmd)
                         }
                     }
